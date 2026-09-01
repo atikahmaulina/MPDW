@@ -1,0 +1,472 @@
+---
+title: "Kuliah 2"
+author: "Atikah Maulina"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown
+---
+
+# Library
+
+```{r}
+library(readxl) # membaca file excel
+library(lmtest) # uji diagnostik pada model regresi
+library(orcutt) # membuat model regresi Cochrane-Orcutt
+```
+
+# MARKET SHARE
+
+# Data
+## Input Data
+
+```{r}
+data1<-read_xlsx("C:/Users/ATIKAH MAULINA/OneDrive/Documents/STK 5/MPDW/MPDW/Pertemuan 3/Kuliah 2.xlsx", sheet=1)
+
+head(data1) # melihat beberapa baris data
+```
+
+```{r}
+# merapihkan data
+dt <- as.data.frame(data1)
+colnames(dt) <- c("periode", "share", "price")
+dt
+```
+
+## Eksplorasi Data
+
+```{r}
+plot(dt$price, dt$share, pch = 20, col = "blue",
+     main = "Scatter Plot Price vs Market Share",
+     xlab = "Price", ylab = "Market Share")
+```
+
+```{r}
+# Korelasi
+cor(dt$price, dt$share)
+```
+
+Nilai korelasi antara price dan market share menunjukkan hubungan linear yang sangat kuat dan negatif. Artinya, semakin tinggi harga (price), semakin rendah market share, begitu pula sebaliknya.
+
+# Model Regresi Awal
+
+```{r}
+model <- lm(share ~ price, data = dt)
+summary(model)
+
+sisaan <- residuals(model)
+fitValue <- predict(model)
+```
+
+Nilai p-value = 3,02e-13 < 0,05 menunjukkan bahwa setiap kenaikan 1 satuan price akan menurunkan market share sebesar 24,290 satuan, dengan asumsi faktor lain tetap. Nilai R-squared menunjukkan model ini mampu menjelaskan 95,11% variasi market share.
+
+## Plot Sisaan
+
+```{r}
+par(mfrow = c(2,2))
+qqnorm(sisaan)
+qqline(sisaan, col = "steelblue", lwd = 2)
+plot(fitValue, sisaan, col = "steelblue", pch = 20,
+     xlab = "Fitted Values", ylab = "Sisaan",
+     main = "Sisaan vs Fitted Values")
+abline(a = 0, b = 0, lwd = 2)
+hist(sisaan, col = "steelblue", main = "Histogram Sisaan")
+plot(seq(1, nrow(dt), 1), sisaan, col = "steelblue", pch = 20,
+     xlab = "Order", ylab = "Sisaan", main = "Sisaan vs Order")
+lines(seq(1, nrow(dt), 1), sisaan, col = "red")
+abline(a = 0, b = 0, lwd = 2)
+```
+
+# Uji Normalitas Sisaan
+
+H0: sisaan normal  
+H1: sisaan tidak normal
+
+```{r}
+shapiro.test(sisaan)
+```
+
+Nilai p-value = 0,8437 > 0,05, maka H0 tidak ditolak, sehingga dapat disimpulkan bahwa sisaan model regresi menyebar normal. Asumsi normalitas sisaan terpenuhi.
+
+# ACF & PACF sisaan
+
+ACF & PACF adalah pengukuran  korelasi langsung antara suatu data dengan data pada lag tertentu (autokorelasi pada sisaan).
+
+```{r}
+par(mfrow = c(1,2))
+acf(sisaan, main = "ACF Sisaan")
+pacf(sisaan, main = "PACF Sisaan")
+```
+
+Plot ACF menunjukkan pola yang mengindikasikan kemungkinan adanya autokorelasi lag pertama pada sisaan karena berada tepat di bawah batas signifikansi (garis putus-putus biru) yang perlu dikonfirmasi lebih lanjut dengan uji formal (Durbin-Watson).
+
+# Uji Durbin-Watson (Autokorelasi)
+
+H0: tidak ada autokorelasi
+H1: ada autokorelasi
+
+```{r}
+dwtest(model)
+```
+
+Nilai p-value 0,009813 < 0,05, maka H0 ditolak, sehingga dapat disimpulkan bahwa terdapat autokorelasi positif pada sisaan model regresi. Hal ini melanggar salah satu asumsi OLS (Ordinary Least Squares), sehingga perlu dilakukan penanganan autokorelasi.
+
+# Penanganan Autokorelasi
+## Cara Manual
+
+```{r}
+y <- dt$share
+x <- dt$price
+```
+
+## Metode Cochrane-Orcutt
+
+```{r}
+rho <- sum(sisaan[-1] * sisaan[-length(sisaan)]) / sum(sisaan[-length(sisaan)]^2)
+```
+
+```{r}
+for (iter in 1:50) {
+  y.trans <- y[-1] - rho * y[-length(y)]
+  x.trans <- x[-1] - rho * x[-length(x)]
+  mod.trans <- lm(y.trans ~ x.trans)
+   b0star <- coef(mod.trans)[1]
+  b1 <- coef(mod.trans)[2]
+  b0 <- b0star / (1 - rho)
+  e.orig <- y - b0 - b1 * x
+  rho.baru <- sum(e.orig[-1] * e.orig[-length(e.orig)]) / sum(e.orig[-length(e.orig)]^2)
+
+  if (abs(rho.baru - rho) < 1e-6) { rho <- rho.baru; break }
+  rho <- rho.baru
+}
+```
+
+```{r}
+cat("Rho optimum (Cochrane-Orcutt):", rho, "\n")
+```
+
+```{r}
+y.trans <- y[-1] - rho * y[-length(y)]
+x.trans <- x[-1] - rho * x[-length(x)]
+modelCO <- lm(y.trans ~ x.trans)
+summary(modelCO)
+```
+
+```{r}
+b0 <- coef(modelCO)[1] / (1 - rho)
+b1 <- coef(modelCO)[2]
+cat("Model asli: share =", round(b0,4), "+ (", round(b1,4), ") * price\n")
+```
+
+```{r}
+# pemeriksaan kembali (seharusnya p-value >= 0.05)
+dwtest(modelCO)   
+```
+
+## Cara Langsung
+
+```{r}
+modelCO <- cochrane.orcutt(model)
+modelCO
+```
+
+```{r}
+# cek lagi (seharusnya p-value >= 0.05)
+dwtest(modelCO) 
+```
+
+Metode Cochrane-Orcutt baik secara manual atau langsung menghasilkan nilai rho (koefisien autokorelasi) optimum sebesar 0,4252. Berdasarkan Uji Durbin-Watson pada model hasil transformasi menunjukkan p-value = 0,4151 > 0,05, yang berarti H0 (tidak ada autokorelasi). Artinya, autokorelasi pada sisaan sudah berhasil diatasi dengan metode Cochrane-Orcutt. Persamaan modelnya yaitu:
+
+
+## Metode Hildreth-Lu
+
+```{r}
+hildreth.lu.func <- function(r, model){
+  x <- model.matrix(model)[,-1]
+  y <- model.response(model.frame(model))
+  n <- length(y)
+  t <- 2:n
+  y <- y[t] - r*y[t-1]
+  x <- x[t] - r*x[t-1]
+  return(lm(y~x))
+}
+```
+
+```{r}
+r <- seq(0.1, 0.9, by = 0.1)
+tab <- data.frame(rho = r, SSE = sapply(r, function(i) deviance(hildreth.lu.func(i, model))))
+tab[order(tab$SSE), ]
+```
+
+```{r}
+rOpt <- seq(0.1, 0.9, by = 0.001)
+tabOpt <- data.frame(rho = rOpt, SSE = sapply(rOpt, function(i) deviance(hildreth.lu.func(i, model))))
+best <- tabOpt[which.min(tabOpt$SSE), ]
+best
+```
+
+```{r}
+plot(tab$SSE ~ tab$rho, type = "l", xlab = "Rho", ylab = "SSE",
+     main = "SSE vs Rho (Hildreth-Lu)")
+abline(v = best$rho, lty = 2, col = "red", lwd = 2)
+text(x = best$rho, y = max(tab$SSE), labels = paste0("rho=", best$rho), cex = 0.8)
+```
+
+Hasilnya diperoleh rho optimum sebesar 0,425 dengan SSE terkecil sebesar 2,659368, yang konsisten dengan hasil metode Cochrane-Orcutt (rho = 0,4252).
+
+```{r}
+modelHL <- hildreth.lu.func(best$rho, model)
+summary(modelHL)
+```
+
+```{r}
+# pemeriksaan kembali
+dwtest(modelHL)
+```
+
+Uji Durbin-Watson pada model hasil transformasi menghasilkan p-value = 0,4148 > 0,05, maka H0 tidak ditolak. Artinya, autokorelasi pada sisaan juga sudah teratasi dengan metode ini. Kedua metode penanganan autokorelasi memberikan nilai rho yang hampir sama, dapat disimpulkan bahwa hasil estimasi rho ini robust/dapat diandalkan.
+
+# Perbandingan Akurasi
+
+```{r}
+sseModelawal <- anova(model)$`Sum Sq`[-1]
+sseModelCO   <- sum(modelCO$residuals^2)
+sseModelHL   <- anova(modelHL)$`Sum Sq`[-1]
+```
+
+```{r}
+n <- nrow(dt)
+mseModelawal <- sseModelawal / n
+mseModelCO   <- sseModelCO / n
+mseModelHL   <- sseModelHL / n
+```
+
+```{r}
+akurasi <- matrix(c(sseModelawal, sseModelCO, sseModelHL,
+                     mseModelawal, mseModelCO, mseModelHL),
+                   nrow = 2, ncol = 3, byrow = TRUE)
+colnames(akurasi) <- c("Model Awal", "Cochrane-Orcutt", "Hildreth-Lu")
+row.names(akurasi) <- c("SSE", "MSE")
+akurasi
+```
+
+Berdasarkan tabel perbandingan akurasi, model Hildreth-Lu memiliki nilai SSE dan MSE paling kecil (SSE = 2,6594; MSE = 0,1330) dibandingkan model awal dan Cochrane-Orcutt. Nilai SSE Cochrane-Orcutt sedikit lebih besar dibanding model awal karena dihitung dari sisaan pada skala data asli (bukan data hasil transformasi), sedangkan Hildreth-Lu dihitung langsung dari model pada skala data yang sudah ditransformasi. Secara keseluruhan, **kedua metode penanganan autokorelasi (Cochrane-Orcutt dan Hildreth-Lu) berhasil memperbaiki model** dengan menurunkan SSE dibanding model awal, sekaligus menghilangkan autokorelasi pada sisaan.
+
+# SALES
+
+# Data
+## Input Data
+
+```{r}
+data2<-read_xlsx("C:/Users/ATIKAH MAULINA/OneDrive/Documents/STK 5/MPDW/MPDW/Pertemuan 3/Kuliah 2.xlsx", sheet=2)
+
+head(data2) # melihat beberapa baris data
+```
+
+```{r}
+# merapihkan format
+dt1 <- as.data.frame(data2)
+colnames(dt1) <- c("tahun", "sales", "advertising")
+dt1
+```
+
+# Eksplorasi Data
+
+```{r}
+plot(dt1$advertising, dt1$sales, pch = 20, col = "blue",
+     main = "Scatter Plot Advertising vs Sales",
+     xlab = "Advertising", ylab = "Sales")
+```
+
+```{r}
+# Korelasi
+cor(dt1$advertising, dt1$sales)
+```
+
+Nilai korelasi antara advertising dan sales menunjukkan hubungan linear yang sangat kuat dan positif. Artinya, semakin tinggi biaya advertising, semakin tinggi pula sales yang dihasilkan.
+
+# Model Regresi Awal
+
+```{r}
+model1 <- lm(sales ~ advertising, data = dt1)
+summary(model1)
+
+sisaan1 <- residuals(model1)
+fitValue <- predict(model1)
+```
+
+Nilai p-value < 2e-16 menunjukkan bahwa setiap kenaikan 1 satuan biaya advertising akan meningkatkan sales sebesar 0,70953 satuan. Nilai R-squared sebesar 0,9599 menunjukkan model ini mampu menjelaskan 95,99% variasi sales.
+
+## Plot Sisaan
+
+```{r}
+par(mfrow = c(2,2))
+qqnorm(sisaan1)
+qqline(sisaan1, col = "steelblue", lwd = 2)
+plot(fitValue, sisaan1, col = "steelblue", pch = 20,
+     xlab = "Fitted Values", ylab = "Sisaan",
+     main = "Sisaan vs Fitted Values")
+abline(a = 0, b = 0, lwd = 2)
+hist(sisaan1, col = "steelblue", main = "Histogram Sisaan")
+plot(seq(1, nrow(dt1), 1), sisaan1, col = "steelblue", pch = 20,
+     xlab = "Order", ylab = "Sisaan", main = "Sisaan vs Order")
+lines(seq(1, nrow(dt1), 1), sisaan1, col = "red")
+abline(a = 0, b = 0, lwd = 2)
+```
+
+# Uji Normalitas Sisaan
+
+```{r}
+shapiro.test(sisaan1)
+```
+
+Nilai p-value = 0,02837 < 0,05, maka H0 ditolak, sehingga dapat disimpulkan bahwa **sisaan model regresi tidak menyebar normal**.
+
+# ACF & PACF Sisaan
+
+ACF & PACF adalah pengukuran  korelasi langsung antara suatu data dengan data pada lag tertentu (autokorelasi pada sisaan).
+
+```{r}
+par(mfrow = c(1,2))
+acf(sisaan1, main = "ACF Sisaan")
+pacf(sisaan1, main = "PACF Sisaan")
+```
+
+Plot ACF menunjukkan pola ini merupakan ciri khas autokorelasi yang sangat kuat pada data deret waktu, yaitu konsisten dengan data sales yang memiliki tren naik yang mulus dari tahun ke tahun.
+
+# Uji Durbin-Watson
+
+```{r}
+dwtest(model1)
+```
+
+Nilai p-value < 2,2e-16, maka H0 ditolak. Artinya, terdapat autokorelasi positif yang sangat kuat pada sisaan model regresi.
+
+# Penanganan Autokorelasi
+
+```{r}
+y <- dt1$sales
+x <- dt1$advertising
+```
+
+## Cara Manual
+
+```{r}
+rho <- sum(sisaan1[-1] * sisaan1[-length(sisaan1)]) / sum(sisaan1[-length(sisaan1)]^2)
+```
+
+```{r}
+for (iter in 1:50) {
+  y.trans <- y[-1] - rho * y[-length(y)]
+  x.trans <- x[-1] - rho * x[-length(x)]
+  mod.trans <- lm(y.trans ~ x.trans)
+
+  b0star <- coef(mod.trans)[1]
+  b1 <- coef(mod.trans)[2]
+  b0 <- b0star / (1 - rho)
+
+  e.orig <- y - b0 - b1 * x
+  rho.baru <- sum(e.orig[-1] * e.orig[-length(e.orig)]) / sum(e.orig[-length(e.orig)]^2)
+
+  if (abs(rho.baru - rho) < 1e-6) { rho <- rho.baru; break }
+  rho <- rho.baru
+}
+```
+
+```{r}
+cat("Rho optimum (Cochrane-Orcutt):", rho, "\n")
+```
+
+```{r}
+y.trans <- y[-1] - rho * y[-length(y)]
+x.trans <- x[-1] - rho * x[-length(x)]
+model_CO <- lm(y.trans ~ x.trans)
+summary(model_CO)
+```
+
+```{r}
+b0 <- coef(model_CO)[1] / (1 - rho)
+b1 <- coef(model_CO)[2]
+
+cat("Model asli: sales =", round(b0,4), "+ (", round(b1,4), ") * advertising\n")
+```
+
+```{r}
+# pemeriksaan kembali (seharusnya p-value < 0.05)
+dwtest(model_CO)
+```
+
+Metode Cochrane-Orcutt menghasilkan rho optimum sebesar 0,9265, hal ini menandakan adanya autokorelasi awal. Uji Durbin-Watson pada model hasil transformasi menghasilkan nilai p-value = 0,4091 > 0,05, sehingga H0 tidak ditolak. Artinya, autokorelasi pada sisaan sudah berhasil diatasi dengan metode Cochrane-Orcutt.
+
+# Metode Hildreth-Lu
+
+```{r}
+hildreth.lu.func <- function(r, model1){
+  x <- model.matrix(model1)[,-1]
+  y <- model.response(model.frame(model1))
+  n <- length(y)
+  t <- 2:n
+  y <- y[t] - r*y[t-1]
+  x <- x[t] - r*x[t-1]
+  return(lm(y~x))
+}
+```
+
+```{r}
+r <- seq(0.1, 0.9, by = 0.1)
+tab <- data.frame(rho = r, SSE = sapply(r, function(i) deviance(hildreth.lu.func(i, model1))))
+tab[order(tab$SSE), ]
+```
+
+```{r}
+rOpt <- seq(0.1, 0.99, by = 0.001)   # dilebarin sampai 0.99
+tabOpt <- data.frame(rho = rOpt, SSE = sapply(rOpt, function(i) deviance(hildreth.lu.func(i, model1))))
+best <- tabOpt[which.min(tabOpt$SSE), ]
+best
+```
+
+```{r}
+plot(tab$SSE ~ tab$rho, type = "l", xlab = "Rho", ylab = "SSE",
+     main = "SSE vs Rho (Hildreth-Lu)")
+abline(v = best$rho, lty = 2, col = "red", lwd = 2)
+text(x = best$rho, y = max(tab$SSE), labels = paste0("rho=", best$rho), cex = 0.8)
+```
+
+Hasilnya diperoleh rho optimum sebesar 0,926 dengan SSE terkecil sebesar 1,439542, yang konsisten dengan hasil metode Cochrane-Orcutt (rho = 0,9265).
+
+```{r}
+model_HL <- hildreth.lu.func(best$rho, model1)
+summary(model_HL)
+```
+
+```{r}
+# pemeriksaan kembali
+dwtest(model_HL)
+```
+
+Uji Durbin-Watson pada model hasil transformasi menghasilkan p-value = 0,4105> 0,05, maka H0 tidak ditolak. Artinya, autokorelasi pada sisaan juga sudah teratasi dengan metode ini. Kedua metode penanganan autokorelasi memberikan nilai rho yang hampir sama, dapat disimpulkan bahwa hasil estimasi rho ini robust/dapat diandalkan.
+
+# Perbandingan Akurasi
+
+```{r}
+sseModelawal <- anova(model1)$`Sum Sq`[-1]
+sseModelCO   <- anova(model_CO)$`Sum Sq`[-1]
+sseModelHL   <- anova(model_HL)$`Sum Sq`[-1]
+```
+
+```{r}
+n <- nrow(dt1)
+mseModelawal <- sseModelawal / n
+mseModelCO   <- sseModelCO / n
+mseModelHL   <- sseModelHL / n
+```
+
+```{r}
+akurasi <- matrix(c(sseModelawal, sseModelCO, sseModelHL,
+                     mseModelawal, mseModelCO, mseModelHL),
+                   nrow = 2, ncol = 3, byrow = TRUE)
+colnames(akurasi) <- c("Model Awal", "Cochrane-Orcutt", "Hildreth-Lu")
+row.names(akurasi) <- c("SSE", "MSE")
+akurasi
+```
+
+Berdasarkan tabel perbandingan akurasi, model Cochrane-Orcutt dan Hildreth-Lu memberikan hasil yang hampir identik dan keduanya jauh lebih baik dibanding model awal. Penurunan SSE dari 10,4633 menjadi 1,4395 menunjukkan bahwa penanganan autokorelasi berhasil mengurangi kesalahan prediksi model secara signifikan. Secara keseluruhan, **kedua metode penanganan autokorelasi (Cochrane-Orcutt dan Hildreth-Lu) berhasil memperbaiki model** dengan menurunkan SSE dibanding model awal, sekaligus menghilangkan autokorelasi pada sisaan.
